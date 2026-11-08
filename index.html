@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Painel Trabalho</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#004696">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Painel MT">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+:root { --blue: #004696; --cyan: #3399FF; --red: #C00000; --bg: #fff; --fg: #004696; --muted: #5a7bab; --line: #BFBFBF; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0f1724; --fg: #dce8f7; --muted: #9db3d1; --line: #3a4a63; } }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 Arial, "Helvetica Neue", Helvetica, sans-serif; }
+header { display: flex; align-items: center; min-height: 64px; padding: env(safe-area-inset-top) 16px 0; background: linear-gradient(90deg, #004696 0%, #3399FF 100%); color: #fff; font-size: 20px; }
+main { max-width: 420px; margin: 48px auto; padding: 0 16px; }
+h1 { font-size: 22px; font-weight: 700; margin: 0 0 8px; }
+p { margin: 0 0 16px; }
+.muted { color: var(--muted); font-size: 14px; }
+input[type=password] { width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: 16px Arial, sans-serif; }
+label.chk { display: flex; gap: 8px; align-items: center; margin: 12px 0 16px; font-size: 14px; }
+button { width: 100%; height: 44px; border: 0; background: var(--blue); color: #fff; font: 700 16px Arial, sans-serif; cursor: pointer; }
+button:disabled { opacity: .6; cursor: progress; }
+#erro { color: var(--red); min-height: 22px; }
+@media (prefers-color-scheme: dark) { #erro { color: #ff8a8a; } }
+</style>
+</head>
+<body>
+<header>Painel Trabalho · off-line</header>
+<main>
+  <h1>Abrir o painel</h1>
+  <p class="muted" id="info">Carregando…</p>
+  <form id="f" hidden autocomplete="off">
+    <input type="password" id="senha" placeholder="Senha do app" autocomplete="current-password" aria-label="Senha do app">
+    <label class="chk"><input type="checkbox" id="lembrar" checked> Lembrar neste aparelho</label>
+    <button type="submit" id="ok">Abrir</button>
+    <p id="erro" aria-live="polite"></p>
+  </form>
+</main>
+<script>
+"use strict";
+(async () => {
+  const $ = (q) => document.querySelector(q);
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  const u8 = (b) => Uint8Array.from(atob(b), c => c.charCodeAt(0));
+  const fmt = (iso) => { try { return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (e) { return iso; } };
+  /* chave lembrada: CryptoKey não exportável no IndexedDB deste aparelho */
+  const idb = () => new Promise((ok, no) => { const r = indexedDB.open("painel_off", 1); r.onupgradeneeded = () => r.result.createObjectStore("k"); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+  const kGet = async (id) => { try { const d = await idb(); return await new Promise(ok => { const q = d.transaction("k").objectStore("k").get(id); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); }); } catch (e) { return null; } };
+  const kSet = async (id, v) => { try { const d = await idb(); await new Promise(ok => { const t = d.transaction("k", "readwrite"); v == null ? t.objectStore("k").delete(id) : t.objectStore("k").put(v, id); t.oncomplete = ok; t.onerror = ok; }); } catch (e) {} };
+  const pega = async (f) => { const r = await fetch(f, { cache: "no-cache" }); if (!r.ok) throw new Error(f); return r.json(); };
+  let chave, dados;
+  try { [chave, dados] = await Promise.all([pega("chave.json"), pega("dados.json")]); }
+  catch (e) { $("#info").textContent = "Os dados ainda não foram baixados neste aparelho. Abra uma vez com internet."; return; }
+  $("#info").textContent = "Dados de " + fmt(dados.gerado_em) + ".";
+  async function privada(senha) {
+    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveKey"]);
+    const kek = await crypto.subtle.deriveKey({ name: "PBKDF2", salt: u8(chave.salt), iterations: chave.iter, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    const pk = await crypto.subtle.decrypt({ name: "AES-GCM", iv: u8(chave.iv) }, kek, u8(chave.priv_enc));
+    return crypto.subtle.importKey("pkcs8", pk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+  }
+  async function abre(priv) {
+    const epk = await crypto.subtle.importKey("jwk", dados.epk, { name: "ECDH", namedCurve: "P-256" }, false, []);
+    const bits = await crypto.subtle.deriveBits({ name: "ECDH", public: epk }, priv, 256);
+    const hk = await crypto.subtle.importKey("raw", bits, "HKDF", false, ["deriveKey"]);
+    const k = await crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: u8(dados.salt), info: new TextEncoder().encode("painel-offline-v1") }, hk, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    const gz = await crypto.subtle.decrypt({ name: "AES-GCM", iv: u8(dados.iv) }, k, u8(dados.ct));
+    const html = await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+    document.open(); document.write(html); document.close();
+  }
+  const id = "priv:" + chave.criada_em;
+  const lembrada = await kGet(id);
+  if (lembrada) { try { await abre(lembrada); return; } catch (e) { await kSet(id, null); } }
+  $("#f").hidden = false; $("#senha").focus();
+  $("#f").addEventListener("submit", async (e) => {
+    e.preventDefault(); const b = $("#ok"); b.disabled = true; $("#erro").textContent = "";
+    let priv;
+    try { priv = await privada($("#senha").value); }
+    catch (x) { $("#erro").textContent = "Senha incorreta."; b.disabled = false; return; }
+    if ($("#lembrar").checked) await kSet(id, priv);
+    try { await abre(priv); }
+    catch (x) { $("#erro").textContent = "Não foi possível abrir os dados (" + (x && x.message || "erro") + ")."; b.disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>
